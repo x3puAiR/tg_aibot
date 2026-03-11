@@ -1,6 +1,7 @@
 services:
   tg-aibot:
     build: .
+    image: tg-aibot
     container_name: tg-aibot
     env_file:
       - .env
