@@ -1,0 +1,9 @@
+services:
+  tg-aibot:
+    build: .
+    container_name: tg-aibot
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
