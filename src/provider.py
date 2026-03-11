@@ -117,6 +117,42 @@ class ChatStream:
             raise ProviderError("Provider request timed out") from exc
 
 
+async def list_models(
+    session: aiohttp.ClientSession,
+    *,
+    base_url: str,
+    api_key: str | None,
+    timeout_sec: float = 15.0,
+) -> list[str]:
+    """Return a sorted list of model IDs from the provider's /v1/models endpoint."""
+    base = base_url.rstrip("/")
+    if base.endswith("/v1"):
+        url = f"{base}/models"
+    elif "/v1/" in base:
+        # e.g. already a full path — climb up to /v1
+        url = base.split("/v1/")[0] + "/v1/models"
+    else:
+        url = f"{base}/v1/models"
+
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        async with session.get(
+            url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout_sec)
+        ) as resp:
+            if resp.status >= 400:
+                body = await resp.text()
+                raise ProviderError(_provider_error(resp.status, body))
+            data = await resp.json()
+    except asyncio.TimeoutError as exc:
+        raise ProviderError("Provider request timed out") from exc
+
+    items = data.get("data") or []
+    return sorted(item["id"] for item in items if item.get("id"))
+
+
 async def chat_once(
     session: aiohttp.ClientSession,
     *,

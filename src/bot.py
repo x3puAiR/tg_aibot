@@ -6,7 +6,6 @@ import time
 
 import aiohttp
 from telegram import (
-    ForceReply,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Update,
@@ -21,7 +20,7 @@ from telegram.ext import (
 )
 
 from db import Database
-from provider import ChatStream, ProviderError, chat_once
+from provider import ChatStream, ProviderError, chat_once, list_models
 from settings import (
     DB_PATH,
     STREAM_UPDATE_INTERVAL_SEC,
@@ -34,7 +33,8 @@ HELP_TEXT = (
     "Commands:\n"
     "/provider — set provider base URL\n"
     "/apikey — set provider API key\n"
-    "/model — choose a model (or /model <name>)\n\n"
+    "/model — set model by name (e.g. /model gpt-4o-mini)\n"
+    "/modellist — list all models from provider (tap to select)\n\n"
     "Session management:\n"
     "/new — start a new session\n"
     "/resume — resume a previous session\n"
@@ -86,11 +86,12 @@ async def command_provider(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await db.set_field(update.effective_user.id, "provider", value)
         await update.message.reply_text("Provider URL updated.")
         return
-    context.user_data["pending"] = "provider"
-    await update.message.reply_text(
-        "Send provider base URL (e.g. https://api.openai.com):",
-        reply_markup=ForceReply(selective=True),
-    )
+    user = await db.get_user(update.effective_user.id)
+    current = user["provider"]
+    if current:
+        await update.message.reply_text(f"Current provider: {current}\nTo change: /provider <url>")
+    else:
+        await update.message.reply_text("No provider set.\nUsage: /provider <url>\nExample: /provider https://api.openai.com")
 
 
 async def command_apikey(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -101,11 +102,13 @@ async def command_apikey(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await db.set_field(update.effective_user.id, "apikey", value)
         await update.message.reply_text("API key updated.")
         return
-    context.user_data["pending"] = "apikey"
-    await update.message.reply_text(
-        "Send provider API key:",
-        reply_markup=ForceReply(selective=True),
-    )
+    user = await db.get_user(update.effective_user.id)
+    current = user["apikey"]
+    if current:
+        masked = current[:4] + "..." + current[-4:] if len(current) > 8 else "****"
+        await update.message.reply_text(f"Current API key: {masked}\nTo change: /apikey <key>")
+    else:
+        await update.message.reply_text("No API key set.\nUsage: /apikey <key>")
 
 
 async def command_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -127,6 +130,48 @@ async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     model = query.data.split(":", 1)[1]
     await db.set_field(query.from_user.id, "model", model)
     await query.edit_message_text(text=f"Model set to {model}.")
+
+
+async def command_modellist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    user_id = update.effective_user.id
+    user = await db.get_user(user_id)
+    if not user["provider"]:
+        await update.message.reply_text(
+            "No provider set. Use /provider to set your API base URL first."
+        )
+        return
+
+    pattern = " ".join(context.args).strip().lower() if context.args else ""
+
+    try:
+        http_session: aiohttp.ClientSession = context.application.bot_data["session"]
+        models = await list_models(http_session, base_url=user["provider"], api_key=user["apikey"])
+    except ProviderError as exc:
+        await update.message.reply_text(str(exc))
+        return
+    except Exception as exc:
+        await update.message.reply_text(f"Failed to fetch models: {exc}")
+        return
+
+    if pattern:
+        import fnmatch
+        models = [m for m in models if fnmatch.fnmatch(m.lower(), f"*{pattern}*")]
+
+    if not models:
+        msg = f'No models matching "{pattern}".' if pattern else "Provider returned no models."
+        await update.message.reply_text(msg)
+        return
+
+    current_model = user["model"] or ""
+    rows = []
+    for m in models:
+        label = f"{'★ ' if m == current_model else ''}{m}"
+        rows.append([InlineKeyboardButton(label, callback_data=f"model:{m}")])
+
+    header = f'Models matching "{pattern}":' if pattern else "Available models:"
+    await update.message.reply_text(header, reply_markup=InlineKeyboardMarkup(rows))
 
 
 # ── Session commands ─────────────────────────────────────────────────────────
@@ -222,14 +267,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not update.message or not update.message.text:
         return
     user_id = update.effective_user.id
-
-    # Handle pending ForceReply inputs
-    pending = context.user_data.get("pending")
-    if pending in {"provider", "apikey"}:
-        await db.set_field(user_id, pending, update.message.text.strip())
-        context.user_data.pop("pending", None)
-        await update.message.reply_text(f"{pending.capitalize()} saved.")
-        return
 
     user = await db.get_user(user_id)
     provider = user["provider"]
@@ -373,6 +410,7 @@ def main() -> None:
     application.add_handler(CommandHandler("provider", command_provider))
     application.add_handler(CommandHandler("apikey", command_apikey))
     application.add_handler(CommandHandler("model", command_model))
+    application.add_handler(CommandHandler("modellist", command_modellist))
     application.add_handler(CommandHandler("new", command_new))
     application.add_handler(CommandHandler("clear", command_clear))
     application.add_handler(CommandHandler("resume", command_resume))
