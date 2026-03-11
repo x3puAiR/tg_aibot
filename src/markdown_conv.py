@@ -1,35 +1,47 @@
 from __future__ import annotations
 
-from telegramify_markdown import convert, split_entities as _split_entities
-from telegram import MessageEntity
+from telegramify_markdown import markdownify
+from telegram.constants import ParseMode
 
-# Safe limit in UTF-16 code units (Telegram max is 4096)
-_MAX_UTF16 = 4000
+_MAX_LEN = 4000
 
 
-def md_to_chunks(text: str) -> list[tuple[str, list[MessageEntity]]]:
-    """Convert standard markdown to a list of (plain_text, entities) chunks.
+def md_to_chunks(text: str) -> list[tuple[str, str]]:
+    """Convert standard markdown to (MarkdownV2_text, parse_mode) chunks.
 
-    Each chunk fits within Telegram's message length limit.
-    Entity offsets are recalculated per-chunk by split_entities.
+    Each chunk is within Telegram's ~4000 char limit, split at paragraph
+    boundaries to avoid cutting inside formatting entities.
     """
-    plain, entities = convert(text)
-    if not plain:
-        return [("(empty response)", [])]
-    chunks = _split_entities(plain, entities, _MAX_UTF16)
-    return chunks if chunks else [(plain[:_MAX_UTF16], [])]
+    mdv2 = markdownify(text)
+    if len(mdv2) <= _MAX_LEN:
+        return [(mdv2, ParseMode.MARKDOWN_V2)]
+    return [
+        (chunk, ParseMode.MARKDOWN_V2)
+        for chunk in _split_paragraphs(mdv2)
+    ]
 
 
-def md_preview(text: str) -> tuple[str, list[MessageEntity]]:
-    """Convert a markdown snippet for a live streaming preview.
+def md_preview(text: str) -> tuple[str, None]:
+    """Return plain text preview for streaming (no parse_mode).
 
-    Takes the last ~4000 characters so the preview stays within limits
-    even when the buffer is large. Conversion is best-effort on partial text.
+    Applying MarkdownV2 to partial/incomplete markdown mid-stream is
+    unreliable — plain text is safer for live previews.
     """
-    snippet = text[-4000:]
-    plain, entities = convert(snippet)
-    # Clamp in case conversion expanded the text somehow
-    if len(plain) > _MAX_UTF16:
-        plain = plain[:_MAX_UTF16]
-        entities = [e for e in entities if e.offset + e.length <= _MAX_UTF16]
-    return plain, entities
+    return text[-_MAX_LEN:], None
+
+
+def _split_paragraphs(text: str) -> list[str]:
+    """Split MarkdownV2 text at paragraph boundaries, respecting the char limit."""
+    chunks: list[str] = []
+    current = ""
+    for para in text.split("\n\n"):
+        seg = para + "\n\n"
+        if len(current) + len(seg) > _MAX_LEN:
+            if current:
+                chunks.append(current.rstrip())
+            current = seg
+        else:
+            current += seg
+    if current.strip():
+        chunks.append(current.rstrip())
+    return chunks or [text[:_MAX_LEN]]

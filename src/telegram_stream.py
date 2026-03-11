@@ -38,15 +38,13 @@ class TelegramStreamer:
         *,
         target: StreamTarget,
         draft_id: int,
-        plain: str,
-        entities: list,
+        text: str,
     ) -> None:
         url = f"https://api.telegram.org/bot{self._token}/sendMessageDraft"
         payload: dict[str, object] = {
             "chat_id": target.chat_id,
             "draft_id": draft_id,
-            "text": plain,
-            "entities": [e.to_dict() for e in entities],
+            "text": text,
         }
         if target.message_thread_id is not None:
             payload["message_thread_id"] = target.message_thread_id
@@ -78,16 +76,15 @@ class TelegramStreamer:
                 continue
             last_update = now
 
-            # Convert current buffer to plain+entities once; reuse for both paths
-            preview_plain, preview_ents = md_preview(text_buffer)
+            # Plain text preview for streaming — MarkdownV2 on partial text is unreliable
+            preview_text, preview_pm = md_preview(text_buffer)
 
             if target.can_use_draft and draft_id is not None:
                 try:
                     await self._send_message_draft(
                         target=target,
                         draft_id=draft_id,
-                        plain=preview_plain,
-                        entities=preview_ents,
+                        text=preview_text,
                     )
                 except Exception:
                     # Fall back to edit_message_text for the rest of the stream
@@ -108,8 +105,8 @@ class TelegramStreamer:
                 await self._bot.edit_message_text(
                     chat_id=target.chat_id,
                     message_id=message.message_id,
-                    text=preview_plain,
-                    entities=preview_ents,
+                    text=preview_text,
+                    parse_mode=preview_pm,
                 )
             await asyncio.sleep(0)
 
@@ -118,39 +115,37 @@ class TelegramStreamer:
         final_chunks = md_to_chunks(final_text)
 
         if target.can_use_draft and draft_id is not None:
-            # Draft was shown during streaming; send the permanent message(s).
-            # The draft disappears automatically when the final sendMessage arrives.
-            for plain, ents in final_chunks:
+            for text, pm in final_chunks:
                 await self._bot.send_message(
                     chat_id=target.chat_id,
                     message_thread_id=target.message_thread_id,
-                    text=plain,
-                    entities=ents,
+                    text=text,
+                    parse_mode=pm,
                 )
         else:
             if message is None:
                 # Response came back without any interim updates (very fast)
-                for plain, ents in final_chunks:
+                for text, pm in final_chunks:
                     await self._bot.send_message(
                         chat_id=target.chat_id,
                         message_thread_id=target.message_thread_id,
-                        text=plain,
-                        entities=ents,
+                        text=text,
+                        parse_mode=pm,
                     )
             else:
-                first_plain, first_ents = final_chunks[0]
+                first_text, first_pm = final_chunks[0]
                 await self._bot.edit_message_text(
                     chat_id=target.chat_id,
                     message_id=message.message_id,
-                    text=first_plain,
-                    entities=first_ents,
+                    text=first_text,
+                    parse_mode=first_pm,
                 )
-                for plain, ents in final_chunks[1:]:
+                for text, pm in final_chunks[1:]:
                     await self._bot.send_message(
                         chat_id=target.chat_id,
                         message_thread_id=target.message_thread_id,
-                        text=plain,
-                        entities=ents,
+                        text=text,
+                        parse_mode=pm,
                     )
 
         return final_text  # raw AI text, not converted — for DB persistence

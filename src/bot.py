@@ -20,6 +20,7 @@ from telegram.ext import (
 )
 
 from db import Database
+from markdown_conv import md_to_chunks
 from provider import ChatStream, ProviderError, chat_once, list_models
 from settings import (
     DB_PATH,
@@ -424,7 +425,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 model=model,
                 messages=messages,
             )
-            await update.message.reply_text(final_text)
+            for text, pm in md_to_chunks(final_text):
+                await update.message.reply_text(text, parse_mode=pm)
         except ProviderError as exc:
             await update.message.reply_text(str(exc))
             return
