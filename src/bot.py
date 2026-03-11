@@ -119,7 +119,12 @@ async def command_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await db.set_field(update.effective_user.id, "model", value)
         await update.message.reply_text(f"Model set to {value}.")
         return
-    await update.message.reply_text("Usage: /model <name>\nExample: /model gpt-4o-mini")
+    user = await db.get_user(update.effective_user.id)
+    current = user["model"]
+    if current:
+        await update.message.reply_text(f"Current model: {current}\nTo change: /model <name>\nExample: /model gpt-4o-mini")
+    else:
+        await update.message.reply_text("No model set.\nUsage: /model <name>\nExample: /model gpt-4o-mini")
 
 
 async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -130,6 +135,28 @@ async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     model = query.data.split(":", 1)[1]
     await db.set_field(query.from_user.id, "model", model)
     await query.edit_message_text(text=f"Model set to {model}.")
+
+
+_ML_PAGE_SIZE = 20
+
+
+def _modellist_keyboard(
+    models: list[str], current_model: str, page: int
+) -> InlineKeyboardMarkup:
+    start = page * _ML_PAGE_SIZE
+    page_models = models[start : start + _ML_PAGE_SIZE]
+    rows = []
+    for i, m in enumerate(page_models):
+        label = f"{'★ ' if m == current_model else ''}{m}"
+        rows.append([InlineKeyboardButton(label, callback_data=f"ml:s:{start + i}")])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("← Prev", callback_data=f"ml:p:{page - 1}"))
+    if start + _ML_PAGE_SIZE < len(models):
+        nav.append(InlineKeyboardButton("Next →", callback_data=f"ml:p:{page + 1}"))
+    if nav:
+        rows.append(nav)
+    return InlineKeyboardMarkup(rows)
 
 
 async def command_modellist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -164,14 +191,56 @@ async def command_modellist(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text(msg)
         return
 
-    current_model = user["model"] or ""
-    rows = []
-    for m in models:
-        label = f"{'★ ' if m == current_model else ''}{m}"
-        rows.append([InlineKeyboardButton(label, callback_data=f"model:{m}")])
+    # Store list in user_data so page callbacks can reference it by index
+    context.user_data["ml_models"] = models
+    context.user_data["ml_pattern"] = pattern
 
-    header = f'Models matching "{pattern}":' if pattern else "Available models:"
-    await update.message.reply_text(header, reply_markup=InlineKeyboardMarkup(rows))
+    current_model = user["model"] or ""
+    total = len(models)
+    header = (
+        f'Models matching "{pattern}" ({total}):' if pattern else f"Available models ({total}):"
+    )
+    await update.message.reply_text(
+        header, reply_markup=_modellist_keyboard(models, current_model, 0)
+    )
+
+
+async def modellist_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    await query.answer()
+
+    parts = query.data.split(":", 2)
+    action = parts[1]
+    user_id = query.from_user.id
+    models: list[str] = context.user_data.get("ml_models", [])
+
+    if not models:
+        await query.edit_message_text("Model list expired. Run /modellist again.")
+        return
+
+    if action == "s":
+        idx = int(parts[2])
+        if idx >= len(models):
+            await query.edit_message_text("Model list expired. Run /modellist again.")
+            return
+        model = models[idx]
+        await db.set_field(user_id, "model", model)
+        await query.edit_message_text(f"Model set to {model}.")
+
+    elif action == "p":
+        page = int(parts[2])
+        user = await db.get_user(user_id)
+        current_model = user["model"] or ""
+        pattern = context.user_data.get("ml_pattern", "")
+        total = len(models)
+        header = (
+            f'Models matching "{pattern}" ({total}):' if pattern else f"Available models ({total}):"
+        )
+        await query.edit_message_text(
+            header, reply_markup=_modellist_keyboard(models, current_model, page)
+        )
 
 
 # ── Session commands ─────────────────────────────────────────────────────────
@@ -417,6 +486,7 @@ def main() -> None:
     application.add_handler(CommandHandler("del", command_del))
 
     application.add_handler(CallbackQueryHandler(model_callback, pattern="^model:"))
+    application.add_handler(CallbackQueryHandler(modellist_callback, pattern="^ml:"))
     application.add_handler(CallbackQueryHandler(session_callback, pattern="^sess:"))
 
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
