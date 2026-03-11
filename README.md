@@ -34,17 +34,33 @@ Each user must configure their own API before chatting:
 /model    gpt-4o-mini
 ```
 
+Or use `/modellist` to browse all models from your provider and tap one to select it.
+
 Then just send any message to start chatting.
+
+## Commands
+
+| Command | Description |
+|---|---|
+| `/provider [url]` | Set provider base URL (shows current if no argument) |
+| `/apikey [key]` | Set provider API key (shows masked current if no argument) |
+| `/model <name>` | Set model by name |
+| `/modellist [pattern]` | List all available models; tap one to select it |
+| `/new` | Start a new chat session |
+| `/resume` | Switch to a previous session |
+| `/clear` | Discard current session and start fresh |
+| `/del` | Delete a session |
+| `/help` | Show help |
 
 ## Core Features
 
 **Streaming responses** — Uses Telegram's `sendMessageDraft` API to show the response as it generates, word by word. Falls back to message editing if unavailable.
 
+**Markdown rendering** — AI responses are rendered with proper Telegram formatting: bold, italic, inline code, code blocks with language hints, strikethrough, and more.
+
+**Model browser** — `/modellist` fetches available models from your provider's `/v1/models` endpoint and displays them as a tappable list. Use `/modellist <pattern>` to filter (e.g. `/modellist gpt-4`). The currently active model is marked with ★.
+
 **Session management** — Conversation history is preserved per session. Each session is auto-titled from the first message.
-- `/new` — start a fresh session
-- `/resume` — switch to a previous session
-- `/clear` — wipe current session and start over
-- `/del` — delete a session
 
 **Token tracking** — After every response, a footer shows the cumulative token usage for the current session: `▸ "session title" · 1,234 tokens`
 
