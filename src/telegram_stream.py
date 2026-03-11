@@ -62,6 +62,7 @@ class TelegramStreamer:
         target: StreamTarget,
         text_stream,
         update_interval: float,
+        empty_response: str = "(empty response)",
     ) -> str:
         """Stream text to Telegram. Returns the final raw (unconverted) text."""
         text_buffer = ""
@@ -111,7 +112,7 @@ class TelegramStreamer:
             await asyncio.sleep(0)
 
         # ── Finalize ────────────────────────────────────────────────
-        final_text = text_buffer.strip() or "(empty response)"
+        final_text = text_buffer.strip() or empty_response
         final_chunks = md_to_chunks(final_text)
 
         if target.can_use_draft and draft_id is not None:

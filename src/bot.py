@@ -20,6 +20,7 @@ from telegram.ext import (
 )
 
 from db import Database
+from i18n import get_lang, t
 from markdown_conv import md_to_chunks
 from provider import ChatStream, ProviderError, chat_once, list_models
 from settings import (
@@ -30,30 +31,15 @@ from settings import (
 from telegram_stream import StreamTarget, TelegramStreamer
 
 
-HELP_TEXT = (
-    "Commands:\n"
-    "/provider — set provider base URL\n"
-    "/apikey — set provider API key\n"
-    "/model — set model by name (e.g. /model gpt-4o-mini)\n"
-    "/modellist — list all models from provider (tap to select)\n\n"
-    "Session management:\n"
-    "/new — start a new session\n"
-    "/resume — resume a previous session\n"
-    "/clear — discard current session and start fresh\n"
-    "/del — delete a session\n\n"
-    "Send any message to chat with the model."
-)
-
-
 db = Database(DB_PATH)
 
 
-def _fmt_date(ts: int) -> str:
+def _fmt_date(ts: int, lang: str) -> str:
     diff = time.time() - ts
     if diff < 86400:
-        return "today"
+        return t("date_today", lang)
     if diff < 172800:
-        return "yesterday"
+        return t("date_yesterday", lang)
     return datetime.datetime.fromtimestamp(ts).strftime("%b %d")
 
 
@@ -61,12 +47,13 @@ def _session_keyboards(
     sessions: list[dict],
     current_id: int | None,
     action: str,
+    lang: str,
 ) -> InlineKeyboardMarkup:
     """Build an inline keyboard listing sessions for resume/del actions."""
     rows = []
     for s in sessions:
         title = s["title"][:24]
-        date = _fmt_date(s["updated_at"])
+        date = _fmt_date(s["updated_at"], lang)
         star = " ★" if s["session_id"] == current_id else ""
         label = f"{title} ({date}){star}"
         rows.append([InlineKeyboardButton(label, callback_data=f"sess:{action}:{s['session_id']}")])
@@ -76,56 +63,60 @@ def _session_keyboards(
 # ── Config commands ──────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(HELP_TEXT)
+    lang = get_lang(update.effective_user)
+    await update.message.reply_text(t("help", lang))
 
 
 async def command_provider(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
+    lang = get_lang(update.effective_user)
     value = " ".join(context.args).strip() if context.args else ""
     if value:
         await db.set_field(update.effective_user.id, "provider", value)
-        await update.message.reply_text("Provider URL updated.")
+        await update.message.reply_text(t("provider_updated", lang))
         return
     user = await db.get_user(update.effective_user.id)
     current = user["provider"]
     if current:
-        await update.message.reply_text(f"Current provider: {current}\nTo change: /provider <url>")
+        await update.message.reply_text(t("provider_current", lang, url=current))
     else:
-        await update.message.reply_text("No provider set.\nUsage: /provider <url>\nExample: /provider https://api.openai.com")
+        await update.message.reply_text(t("provider_not_set", lang))
 
 
 async def command_apikey(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
+    lang = get_lang(update.effective_user)
     value = " ".join(context.args).strip() if context.args else ""
     if value:
         await db.set_field(update.effective_user.id, "apikey", value)
-        await update.message.reply_text("API key updated.")
+        await update.message.reply_text(t("apikey_updated", lang))
         return
     user = await db.get_user(update.effective_user.id)
     current = user["apikey"]
     if current:
         masked = current[:4] + "..." + current[-4:] if len(current) > 8 else "****"
-        await update.message.reply_text(f"Current API key: {masked}\nTo change: /apikey <key>")
+        await update.message.reply_text(t("apikey_current", lang, masked=masked))
     else:
-        await update.message.reply_text("No API key set.\nUsage: /apikey <key>")
+        await update.message.reply_text(t("apikey_not_set", lang))
 
 
 async def command_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
+    lang = get_lang(update.effective_user)
     value = " ".join(context.args).strip() if context.args else ""
     if value:
         await db.set_field(update.effective_user.id, "model", value)
-        await update.message.reply_text(f"Model set to {value}.")
+        await update.message.reply_text(t("model_updated", lang, model=value))
         return
     user = await db.get_user(update.effective_user.id)
     current = user["model"]
     if current:
-        await update.message.reply_text(f"Current model: {current}\nTo change: /model <name>\nExample: /model gpt-4o-mini")
+        await update.message.reply_text(t("model_current", lang, model=current))
     else:
-        await update.message.reply_text("No model set.\nUsage: /model <name>\nExample: /model gpt-4o-mini")
+        await update.message.reply_text(t("model_not_set", lang))
 
 
 async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -133,16 +124,17 @@ async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not query or not query.data:
         return
     await query.answer()
+    lang = get_lang(query.from_user)
     model = query.data.split(":", 1)[1]
     await db.set_field(query.from_user.id, "model", model)
-    await query.edit_message_text(text=f"Model set to {model}.")
+    await query.edit_message_text(text=t("model_updated", lang, model=model))
 
 
 _ML_PAGE_SIZE = 20
 
 
 def _modellist_keyboard(
-    models: list[str], current_model: str, page: int
+    models: list[str], current_model: str, page: int, lang: str
 ) -> InlineKeyboardMarkup:
     start = page * _ML_PAGE_SIZE
     page_models = models[start : start + _ML_PAGE_SIZE]
@@ -152,9 +144,9 @@ def _modellist_keyboard(
         rows.append([InlineKeyboardButton(label, callback_data=f"ml:s:{start + i}")])
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("← Prev", callback_data=f"ml:p:{page - 1}"))
+        nav.append(InlineKeyboardButton(t("btn_prev", lang), callback_data=f"ml:p:{page - 1}"))
     if start + _ML_PAGE_SIZE < len(models):
-        nav.append(InlineKeyboardButton("Next →", callback_data=f"ml:p:{page + 1}"))
+        nav.append(InlineKeyboardButton(t("btn_next", lang), callback_data=f"ml:p:{page + 1}"))
     if nav:
         rows.append(nav)
     return InlineKeyboardMarkup(rows)
@@ -163,12 +155,11 @@ def _modellist_keyboard(
 async def command_modellist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
+    lang = get_lang(update.effective_user)
     user_id = update.effective_user.id
     user = await db.get_user(user_id)
     if not user["provider"]:
-        await update.message.reply_text(
-            "No provider set. Use /provider to set your API base URL first."
-        )
+        await update.message.reply_text(t("modellist_no_provider", lang))
         return
 
     pattern = " ".join(context.args).strip().lower() if context.args else ""
@@ -180,7 +171,7 @@ async def command_modellist(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text(str(exc))
         return
     except Exception as exc:
-        await update.message.reply_text(f"Failed to fetch models: {exc}")
+        await update.message.reply_text(t("modellist_fetch_failed", lang, error=exc))
         return
 
     if pattern:
@@ -188,7 +179,11 @@ async def command_modellist(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         models = [m for m in models if fnmatch.fnmatch(m.lower(), f"*{pattern}*")]
 
     if not models:
-        msg = f'No models matching "{pattern}".' if pattern else "Provider returned no models."
+        msg = (
+            t("modellist_no_match", lang, pattern=pattern)
+            if pattern
+            else t("modellist_empty", lang)
+        )
         await update.message.reply_text(msg)
         return
 
@@ -199,10 +194,12 @@ async def command_modellist(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     current_model = user["model"] or ""
     total = len(models)
     header = (
-        f'Models matching "{pattern}" ({total}):' if pattern else f"Available models ({total}):"
+        t("modellist_header_filtered", lang, pattern=pattern, total=total)
+        if pattern
+        else t("modellist_header", lang, total=total)
     )
     await update.message.reply_text(
-        header, reply_markup=_modellist_keyboard(models, current_model, 0)
+        header, reply_markup=_modellist_keyboard(models, current_model, 0, lang)
     )
 
 
@@ -211,6 +208,7 @@ async def modellist_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not query or not query.data:
         return
     await query.answer()
+    lang = get_lang(query.from_user)
 
     parts = query.data.split(":", 2)
     action = parts[1]
@@ -218,17 +216,17 @@ async def modellist_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     models: list[str] = context.user_data.get("ml_models", [])
 
     if not models:
-        await query.edit_message_text("Model list expired. Run /modellist again.")
+        await query.edit_message_text(t("modellist_expired", lang))
         return
 
     if action == "s":
         idx = int(parts[2])
         if idx >= len(models):
-            await query.edit_message_text("Model list expired. Run /modellist again.")
+            await query.edit_message_text(t("modellist_expired", lang))
             return
         model = models[idx]
         await db.set_field(user_id, "model", model)
-        await query.edit_message_text(f"Model set to {model}.")
+        await query.edit_message_text(t("model_updated", lang, model=model))
 
     elif action == "p":
         page = int(parts[2])
@@ -237,10 +235,12 @@ async def modellist_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         pattern = context.user_data.get("ml_pattern", "")
         total = len(models)
         header = (
-            f'Models matching "{pattern}" ({total}):' if pattern else f"Available models ({total}):"
+            t("modellist_header_filtered", lang, pattern=pattern, total=total)
+            if pattern
+            else t("modellist_header", lang, total=total)
         )
         await query.edit_message_text(
-            header, reply_markup=_modellist_keyboard(models, current_model, page)
+            header, reply_markup=_modellist_keyboard(models, current_model, page, lang)
         )
 
 
@@ -249,45 +249,49 @@ async def modellist_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def command_new(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
+    lang = get_lang(update.effective_user)
     session_id = await db.create_session(update.effective_user.id)
-    await update.message.reply_text(f"New session started (#{session_id}). Send a message to begin.")
+    await update.message.reply_text(t("session_new", lang, id=session_id))
 
 
 async def command_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
+    lang = get_lang(update.effective_user)
     user_id = update.effective_user.id
     user = await db.get_user(user_id)
     if user["current_session_id"] is not None:
         await db.delete_session(user["current_session_id"])
     session_id = await db.create_session(user_id)
-    await update.message.reply_text(f"Session cleared. New session started (#{session_id}).")
+    await update.message.reply_text(t("session_cleared", lang, id=session_id))
 
 
 async def command_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
+    lang = get_lang(update.effective_user)
     user_id = update.effective_user.id
     sessions = await db.get_sessions(user_id)
     if not sessions:
-        await update.message.reply_text("No sessions found. Send a message to start one.")
+        await update.message.reply_text(t("session_none", lang))
         return
     user = await db.get_user(user_id)
-    keyboard = _session_keyboards(sessions, user["current_session_id"], "resume")
-    await update.message.reply_text("Choose a session to resume:", reply_markup=keyboard)
+    keyboard = _session_keyboards(sessions, user["current_session_id"], "resume", lang)
+    await update.message.reply_text(t("session_choose_resume", lang), reply_markup=keyboard)
 
 
 async def command_del(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
+    lang = get_lang(update.effective_user)
     user_id = update.effective_user.id
     sessions = await db.get_sessions(user_id)
     if not sessions:
-        await update.message.reply_text("No sessions to delete.")
+        await update.message.reply_text(t("session_none_to_delete", lang))
         return
     user = await db.get_user(user_id)
-    keyboard = _session_keyboards(sessions, user["current_session_id"], "del")
-    await update.message.reply_text("Choose a session to delete:", reply_markup=keyboard)
+    keyboard = _session_keyboards(sessions, user["current_session_id"], "del", lang)
+    await update.message.reply_text(t("session_choose_delete", lang), reply_markup=keyboard)
 
 
 async def session_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -295,6 +299,7 @@ async def session_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if not query or not query.data:
         return
     await query.answer()
+    lang = get_lang(query.from_user)
 
     parts = query.data.split(":", 2)
     if len(parts) != 3:
@@ -305,30 +310,30 @@ async def session_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     session = await db.get_session(session_id)
     if not session or session["user_id"] != user_id:
-        await query.edit_message_text("Session not found.")
+        await query.edit_message_text(t("session_not_found", lang))
         return
 
     if action == "resume":
         await db.set_field(user_id, "current_session_id", session_id)
-        await query.edit_message_text(f'Resumed: "{session["title"]}"')
+        await query.edit_message_text(t("session_resumed", lang, title=session["title"]))
 
     elif action == "del":
         keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("Yes, delete", callback_data=f"sess:del_confirm:{session_id}"),
-            InlineKeyboardButton("Cancel", callback_data="sess:cancel:0"),
+            InlineKeyboardButton(t("btn_yes_delete", lang), callback_data=f"sess:del_confirm:{session_id}"),
+            InlineKeyboardButton(t("btn_cancel", lang), callback_data="sess:cancel:0"),
         ]])
         await query.edit_message_text(
-            f'Delete session "{session["title"]}"?',
+            t("session_confirm_delete", lang, title=session["title"]),
             reply_markup=keyboard,
         )
 
     elif action == "del_confirm":
         title = session["title"]
         await db.delete_session(session_id)
-        await query.edit_message_text(f'Deleted: "{title}"')
+        await query.edit_message_text(t("session_deleted", lang, title=title))
 
     elif action == "cancel":
-        await query.edit_message_text("Cancelled.")
+        await query.edit_message_text(t("session_cancelled", lang))
 
 
 # ── Message handler ──────────────────────────────────────────────────────────
@@ -336,6 +341,7 @@ async def session_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
         return
+    lang = get_lang(update.effective_user)
     user_id = update.effective_user.id
 
     user = await db.get_user(user_id)
@@ -344,18 +350,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     apikey = user["apikey"]
 
     if not provider:
-        await update.message.reply_text(
-            "No provider set.\n"
-            "Use /provider to set your API base URL.\n"
-            "Example: /provider https://api.openai.com"
-        )
+        await update.message.reply_text(t("chat_no_provider", lang))
         return
     if not model:
-        await update.message.reply_text(
-            "No model set.\n"
-            "Use /model <name> to set your model.\n"
-            "Example: /model gpt-4o-mini"
-        )
+        await update.message.reply_text(t("chat_no_model", lang))
         return
 
     # Resolve current session (create one if needed or if it was deleted)
@@ -398,21 +396,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             target=target,
             text_stream=chat_stream,
             update_interval=STREAM_UPDATE_INTERVAL_SEC,
+            empty_response=t("empty_response", lang),
         )
         usage = chat_stream.usage
     except ProviderError as exc:
         await update.message.reply_text(str(exc))
         return
     except aiohttp.InvalidURL:
-        await update.message.reply_text(
-            "Invalid provider URL. Use /provider to set a valid URL.\n"
-            "Example: /provider https://api.openai.com"
-        )
+        await update.message.reply_text(t("chat_invalid_url", lang))
         return
     except aiohttp.ClientConnectorError as exc:
-        await update.message.reply_text(
-            f"Cannot connect to provider. Check your URL with /provider.\n({exc.os_error})"
-        )
+        await update.message.reply_text(t("chat_connect_error", lang, error=exc.os_error))
         return
     except Exception:
         # Streaming failed for a non-provider reason (e.g. Telegram API issue).
@@ -431,7 +425,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await update.message.reply_text(str(exc))
             return
         except Exception as exc:
-            await update.message.reply_text(f"Request failed: {exc}")
+            await update.message.reply_text(t("chat_request_failed", lang, error=exc))
             return
 
     # Persist the exchange
@@ -444,7 +438,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     session_info = await db.get_session(session_id)
     title_short = (session_info["title"] or "Session")[:25] if session_info else "Session"
     await update.message.reply_text(
-        f'▸ "{title_short}" · {session_tokens:,} tokens',
+        t("token_footer", lang, title=title_short, tokens=f"{session_tokens:,}"),
         disable_notification=True,
     )
 
