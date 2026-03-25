@@ -153,6 +153,38 @@ async def list_models(
     return sorted(item["id"] for item in items if item.get("id"))
 
 
+def _parse_sse_body(text: str) -> dict:
+    """Parse an SSE body (text/event-stream) into a synthetic non-streaming response dict.
+
+    Used when a provider ignores stream=False and returns SSE anyway.
+    """
+    parts: list[str] = []
+    usage: dict | None = None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[len("data:"):].strip()
+        if data == "[DONE]":
+            break
+        try:
+            obj = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        if obj.get("usage"):
+            usage = obj["usage"]
+        choices = obj.get("choices") or []
+        if choices:
+            delta = choices[0].get("delta") or choices[0].get("message") or {}
+            c = delta.get("content")
+            if c:
+                parts.append(c)
+    return {
+        "choices": [{"message": {"content": "".join(parts)}}],
+        "usage": usage,
+    }
+
+
 async def chat_once(
     session: aiohttp.ClientSession,
     *,
@@ -162,7 +194,10 @@ async def chat_once(
     messages: list[dict],
     timeout_sec: float = 60.0,
 ) -> tuple[str, dict | None]:
-    """Non-streaming chat. Returns (content, usage_dict_or_None)."""
+    """Non-streaming chat. Returns (content, usage_dict_or_None).
+
+    Handles providers that ignore stream=False and return SSE anyway.
+    """
     url = _completion_url(base_url)
     headers: dict[str, str] = {"Content-Type": "application/json"}
     if api_key:
@@ -184,9 +219,15 @@ async def chat_once(
             if resp.status >= 400:
                 body = await resp.text()
                 raise ProviderError(_provider_error(resp.status, body))
-            data = await resp.json()
+            body = await resp.text()
     except asyncio.TimeoutError as exc:
         raise ProviderError("Provider request timed out") from exc
+
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        # Provider returned SSE despite stream=False — parse it as a stream
+        data = _parse_sse_body(body)
 
     choices = data.get("choices") or [{}]
     message = choices[0].get("message") or {}

@@ -30,13 +30,32 @@ def md_preview(text: str) -> tuple[str, None]:
     return text[-_MAX_LEN:], None
 
 
+def _hard_split(text: str) -> list[str]:
+    """Split text that exceeds _MAX_LEN at word boundaries."""
+    result = []
+    while len(text) > _MAX_LEN:
+        split_at = text.rfind(" ", 0, _MAX_LEN)
+        if split_at == -1:
+            split_at = _MAX_LEN
+        result.append(text[:split_at])
+        text = text[split_at:].lstrip()
+    if text:
+        result.append(text)
+    return result
+
+
 def _split_paragraphs(text: str) -> list[str]:
     """Split MarkdownV2 text at paragraph boundaries, respecting the char limit."""
     chunks: list[str] = []
     current = ""
     for para in text.split("\n\n"):
         seg = para + "\n\n"
-        if len(current) + len(seg) > _MAX_LEN:
+        if len(seg) > _MAX_LEN:
+            if current:
+                chunks.append(current.rstrip())
+                current = ""
+            chunks.extend(_hard_split(seg.rstrip()))
+        elif len(current) + len(seg) > _MAX_LEN:
             if current:
                 chunks.append(current.rstrip())
             current = seg
@@ -44,4 +63,4 @@ def _split_paragraphs(text: str) -> list[str]:
             current += seg
     if current.strip():
         chunks.append(current.rstrip())
-    return chunks or [text[:_MAX_LEN]]
+    return chunks or _hard_split(text)
