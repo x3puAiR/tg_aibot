@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import fnmatch
 import os
 import time
 
@@ -175,7 +176,6 @@ async def command_modellist(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
 
     if pattern:
-        import fnmatch
         models = [m for m in models if fnmatch.fnmatch(m.lower(), f"*{pattern}*")]
 
     if not models:

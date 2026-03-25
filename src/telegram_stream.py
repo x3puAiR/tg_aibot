@@ -33,6 +33,14 @@ class TelegramStreamer:
         self._token = token
         self._session = session
 
+    async def _send_chunk(self, target: StreamTarget, text: str, parse_mode: str | None) -> None:
+        await self._bot.send_message(
+            chat_id=target.chat_id,
+            message_thread_id=target.message_thread_id,
+            text=text,
+            parse_mode=parse_mode,
+        )
+
     async def _send_message_draft(
         self,
         *,
@@ -117,22 +125,12 @@ class TelegramStreamer:
 
         if target.can_use_draft and draft_id is not None:
             for text, pm in final_chunks:
-                await self._bot.send_message(
-                    chat_id=target.chat_id,
-                    message_thread_id=target.message_thread_id,
-                    text=text,
-                    parse_mode=pm,
-                )
+                await self._send_chunk(target, text, pm)
         else:
             if message is None:
                 # Response came back without any interim updates (very fast)
                 for text, pm in final_chunks:
-                    await self._bot.send_message(
-                        chat_id=target.chat_id,
-                        message_thread_id=target.message_thread_id,
-                        text=text,
-                        parse_mode=pm,
-                    )
+                    await self._send_chunk(target, text, pm)
             else:
                 first_text, first_pm = final_chunks[0]
                 await self._bot.edit_message_text(
@@ -142,11 +140,6 @@ class TelegramStreamer:
                     parse_mode=first_pm,
                 )
                 for text, pm in final_chunks[1:]:
-                    await self._bot.send_message(
-                        chat_id=target.chat_id,
-                        message_thread_id=target.message_thread_id,
-                        text=text,
-                        parse_mode=pm,
-                    )
+                    await self._send_chunk(target, text, pm)
 
         return final_text  # raw AI text, not converted — for DB persistence
