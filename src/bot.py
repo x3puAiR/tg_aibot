@@ -95,6 +95,7 @@ def _schedule_delete(bot, chat_id: int, message_id: int, delay: float = _DELETE_
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = get_lang(update.effective_user)
+    _schedule_delete(context.bot, update.effective_chat.id, update.message.message_id)
     await _reply(update, context, t("help", lang))
 
 
@@ -102,6 +103,7 @@ async def command_provider(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if not update.message:
         return
     lang = get_lang(update.effective_user)
+    _schedule_delete(context.bot, update.effective_chat.id, update.message.message_id)
     value = " ".join(context.args).strip() if context.args else ""
     if value:
         await db.set_field(update.effective_user.id, "provider", value)
@@ -119,6 +121,7 @@ async def command_apikey(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not update.message:
         return
     lang = get_lang(update.effective_user)
+    _schedule_delete(context.bot, update.effective_chat.id, update.message.message_id)
     value = " ".join(context.args).strip() if context.args else ""
     if value:
         await db.set_field(update.effective_user.id, "apikey", value)
@@ -137,6 +140,7 @@ async def command_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not update.message:
         return
     lang = get_lang(update.effective_user)
+    _schedule_delete(context.bot, update.effective_chat.id, update.message.message_id)
     value = " ".join(context.args).strip() if context.args else ""
     if value:
         await db.set_field(update.effective_user.id, "model", value)
@@ -188,6 +192,7 @@ async def command_modellist(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not update.message:
         return
     lang = get_lang(update.effective_user)
+    _schedule_delete(context.bot, update.effective_chat.id, update.message.message_id)
     user_id = update.effective_user.id
     user = await db.get_user(user_id)
     if not user["provider"]:
@@ -286,6 +291,7 @@ async def command_new(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not update.message:
         return
     lang = get_lang(update.effective_user)
+    _schedule_delete(context.bot, update.effective_chat.id, update.message.message_id)
     session_id = await db.create_session(update.effective_user.id)
     await _reply(update, context, t("session_new", lang, id=session_id))
 
@@ -294,6 +300,7 @@ async def command_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not update.message:
         return
     lang = get_lang(update.effective_user)
+    _schedule_delete(context.bot, update.effective_chat.id, update.message.message_id)
     user_id = update.effective_user.id
     user = await db.get_user(user_id)
     if user["current_session_id"] is not None:
@@ -306,6 +313,7 @@ async def command_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not update.message:
         return
     lang = get_lang(update.effective_user)
+    _schedule_delete(context.bot, update.effective_chat.id, update.message.message_id)
     user_id = update.effective_user.id
     sessions = await db.get_sessions(user_id)
     if not sessions:
@@ -320,6 +328,7 @@ async def command_del(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not update.message:
         return
     lang = get_lang(update.effective_user)
+    _schedule_delete(context.bot, update.effective_chat.id, update.message.message_id)
     user_id = update.effective_user.id
     sessions = await db.get_sessions(user_id)
     if not sessions:
