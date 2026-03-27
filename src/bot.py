@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import base64
 import datetime
 import fnmatch
 import os
@@ -34,6 +36,8 @@ from telegram_stream import StreamTarget, TelegramStreamer
 
 db = Database(DB_PATH)
 
+_DELETE_DELAY = 60.0  # seconds before system messages are auto-deleted
+
 
 def _fmt_date(ts: int, lang: str) -> str:
     diff = time.time() - ts
@@ -61,11 +65,37 @@ def _session_keyboards(
     return InlineKeyboardMarkup(rows)
 
 
+# ── Auto-delete helpers ───────────────────────────────────────────────────────
+
+async def _autodelete(bot, chat_id: int, message_id: int, delay: float = _DELETE_DELAY) -> None:
+    await asyncio.sleep(delay)
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        pass
+
+
+async def _reply(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+    delay: float = _DELETE_DELAY,
+    **kwargs,
+) -> None:
+    """Reply to update.message and schedule auto-deletion after delay seconds."""
+    msg = await update.message.reply_text(text, **kwargs)
+    asyncio.create_task(_autodelete(context.bot, update.effective_chat.id, msg.message_id, delay))
+
+
+def _schedule_delete(bot, chat_id: int, message_id: int, delay: float = _DELETE_DELAY) -> None:
+    asyncio.create_task(_autodelete(bot, chat_id, message_id, delay))
+
+
 # ── Config commands ──────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = get_lang(update.effective_user)
-    await update.message.reply_text(t("help", lang))
+    await _reply(update, context, t("help", lang))
 
 
 async def command_provider(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -75,14 +105,14 @@ async def command_provider(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     value = " ".join(context.args).strip() if context.args else ""
     if value:
         await db.set_field(update.effective_user.id, "provider", value)
-        await update.message.reply_text(t("provider_updated", lang))
+        await _reply(update, context, t("provider_updated", lang))
         return
     user = await db.get_user(update.effective_user.id)
     current = user["provider"]
     if current:
-        await update.message.reply_text(t("provider_current", lang, url=current))
+        await _reply(update, context, t("provider_current", lang, url=current))
     else:
-        await update.message.reply_text(t("provider_not_set", lang))
+        await _reply(update, context, t("provider_not_set", lang))
 
 
 async def command_apikey(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -92,15 +122,15 @@ async def command_apikey(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     value = " ".join(context.args).strip() if context.args else ""
     if value:
         await db.set_field(update.effective_user.id, "apikey", value)
-        await update.message.reply_text(t("apikey_updated", lang))
+        await _reply(update, context, t("apikey_updated", lang))
         return
     user = await db.get_user(update.effective_user.id)
     current = user["apikey"]
     if current:
         masked = current[:4] + "..." + current[-4:] if len(current) > 8 else "****"
-        await update.message.reply_text(t("apikey_current", lang, masked=masked))
+        await _reply(update, context, t("apikey_current", lang, masked=masked))
     else:
-        await update.message.reply_text(t("apikey_not_set", lang))
+        await _reply(update, context, t("apikey_not_set", lang))
 
 
 async def command_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -110,14 +140,14 @@ async def command_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     value = " ".join(context.args).strip() if context.args else ""
     if value:
         await db.set_field(update.effective_user.id, "model", value)
-        await update.message.reply_text(t("model_updated", lang, model=value))
+        await _reply(update, context, t("model_updated", lang, model=value))
         return
     user = await db.get_user(update.effective_user.id)
     current = user["model"]
     if current:
-        await update.message.reply_text(t("model_current", lang, model=current))
+        await _reply(update, context, t("model_current", lang, model=current))
     else:
-        await update.message.reply_text(t("model_not_set", lang))
+        await _reply(update, context, t("model_not_set", lang))
 
 
 async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -129,6 +159,7 @@ async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     model = query.data.split(":", 1)[1]
     await db.set_field(query.from_user.id, "model", model)
     await query.edit_message_text(text=t("model_updated", lang, model=model))
+    _schedule_delete(context.bot, query.message.chat.id, query.message.message_id)
 
 
 _ML_PAGE_SIZE = 20
@@ -160,7 +191,7 @@ async def command_modellist(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     user_id = update.effective_user.id
     user = await db.get_user(user_id)
     if not user["provider"]:
-        await update.message.reply_text(t("modellist_no_provider", lang))
+        await _reply(update, context, t("modellist_no_provider", lang))
         return
 
     pattern = " ".join(context.args).strip().lower() if context.args else ""
@@ -169,10 +200,10 @@ async def command_modellist(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         http_session: aiohttp.ClientSession = context.application.bot_data["session"]
         models = await list_models(http_session, base_url=user["provider"], api_key=user["apikey"])
     except ProviderError as exc:
-        await update.message.reply_text(str(exc))
+        await _reply(update, context, str(exc))
         return
     except Exception as exc:
-        await update.message.reply_text(t("modellist_fetch_failed", lang, error=exc))
+        await _reply(update, context, t("modellist_fetch_failed", lang, error=exc))
         return
 
     if pattern:
@@ -184,7 +215,7 @@ async def command_modellist(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             if pattern
             else t("modellist_empty", lang)
         )
-        await update.message.reply_text(msg)
+        await _reply(update, context, msg)
         return
 
     # Store list in user_data so page callbacks can reference it by index
@@ -198,8 +229,9 @@ async def command_modellist(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         if pattern
         else t("modellist_header", lang, total=total)
     )
-    await update.message.reply_text(
-        header, reply_markup=_modellist_keyboard(models, current_model, 0, lang)
+    await _reply(
+        update, context, header,
+        reply_markup=_modellist_keyboard(models, current_model, 0, lang),
     )
 
 
@@ -217,16 +249,19 @@ async def modellist_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if not models:
         await query.edit_message_text(t("modellist_expired", lang))
+        _schedule_delete(context.bot, query.message.chat.id, query.message.message_id)
         return
 
     if action == "s":
         idx = int(parts[2])
         if idx >= len(models):
             await query.edit_message_text(t("modellist_expired", lang))
+            _schedule_delete(context.bot, query.message.chat.id, query.message.message_id)
             return
         model = models[idx]
         await db.set_field(user_id, "model", model)
         await query.edit_message_text(t("model_updated", lang, model=model))
+        _schedule_delete(context.bot, query.message.chat.id, query.message.message_id)
 
     elif action == "p":
         page = int(parts[2])
@@ -242,6 +277,7 @@ async def modellist_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.edit_message_text(
             header, reply_markup=_modellist_keyboard(models, current_model, page, lang)
         )
+        # Keep alive while paginating — no delete scheduled here
 
 
 # ── Session commands ─────────────────────────────────────────────────────────
@@ -251,7 +287,7 @@ async def command_new(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     lang = get_lang(update.effective_user)
     session_id = await db.create_session(update.effective_user.id)
-    await update.message.reply_text(t("session_new", lang, id=session_id))
+    await _reply(update, context, t("session_new", lang, id=session_id))
 
 
 async def command_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -263,7 +299,7 @@ async def command_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if user["current_session_id"] is not None:
         await db.delete_session(user["current_session_id"])
     session_id = await db.create_session(user_id)
-    await update.message.reply_text(t("session_cleared", lang, id=session_id))
+    await _reply(update, context, t("session_cleared", lang, id=session_id))
 
 
 async def command_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -273,11 +309,11 @@ async def command_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = update.effective_user.id
     sessions = await db.get_sessions(user_id)
     if not sessions:
-        await update.message.reply_text(t("session_none", lang))
+        await _reply(update, context, t("session_none", lang))
         return
     user = await db.get_user(user_id)
     keyboard = _session_keyboards(sessions, user["current_session_id"], "resume", lang)
-    await update.message.reply_text(t("session_choose_resume", lang), reply_markup=keyboard)
+    await _reply(update, context, t("session_choose_resume", lang), reply_markup=keyboard)
 
 
 async def command_del(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -287,11 +323,11 @@ async def command_del(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user_id = update.effective_user.id
     sessions = await db.get_sessions(user_id)
     if not sessions:
-        await update.message.reply_text(t("session_none_to_delete", lang))
+        await _reply(update, context, t("session_none_to_delete", lang))
         return
     user = await db.get_user(user_id)
     keyboard = _session_keyboards(sessions, user["current_session_id"], "del", lang)
-    await update.message.reply_text(t("session_choose_delete", lang), reply_markup=keyboard)
+    await _reply(update, context, t("session_choose_delete", lang), reply_markup=keyboard)
 
 
 async def session_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -311,11 +347,13 @@ async def session_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     session = await db.get_session(session_id)
     if not session or session["user_id"] != user_id:
         await query.edit_message_text(t("session_not_found", lang))
+        _schedule_delete(context.bot, query.message.chat.id, query.message.message_id)
         return
 
     if action == "resume":
         await db.set_field(user_id, "current_session_id", session_id)
         await query.edit_message_text(t("session_resumed", lang, title=session["title"]))
+        _schedule_delete(context.bot, query.message.chat.id, query.message.message_id)
 
     elif action == "del":
         keyboard = InlineKeyboardMarkup([[
@@ -326,50 +364,34 @@ async def session_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             t("session_confirm_delete", lang, title=session["title"]),
             reply_markup=keyboard,
         )
+        # Keep alive while waiting for confirm/cancel — no delete scheduled here
 
     elif action == "del_confirm":
         title = session["title"]
         await db.delete_session(session_id)
         await query.edit_message_text(t("session_deleted", lang, title=title))
+        _schedule_delete(context.bot, query.message.chat.id, query.message.message_id)
 
     elif action == "cancel":
         await query.edit_message_text(t("session_cancelled", lang))
+        _schedule_delete(context.bot, query.message.chat.id, query.message.message_id)
 
 
-# ── Message handler ──────────────────────────────────────────────────────────
+# ── Shared chat logic ─────────────────────────────────────────────────────────
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message or not update.message.text:
-        return
-    lang = get_lang(update.effective_user)
-    user_id = update.effective_user.id
-
-    user = await db.get_user(user_id)
+async def _run_chat(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    messages: list[dict],
+    session_id: int,
+    lang: str,
+    user_text_for_db: str,
+) -> None:
+    """Stream a chat request and persist the result. Shared by text and photo handlers."""
+    user = await db.get_user(update.effective_user.id)
     provider = user["provider"]
     model = user["model"]
     apikey = user["apikey"]
-
-    if not provider:
-        await update.message.reply_text(t("chat_no_provider", lang))
-        return
-    if not model:
-        await update.message.reply_text(t("chat_no_model", lang))
-        return
-
-    # Resolve current session (create one if needed or if it was deleted)
-    session_id = user["current_session_id"]
-    if session_id is not None and await db.get_session(session_id) is None:
-        session_id = None
-    if session_id is None:
-        session_id = await db.create_session(user_id)
-
-    # Auto-title from the first message in this session
-    history = await db.get_messages(session_id)
-    if not history:
-        title = update.message.text[:40].replace("\n", " ")
-        await db.set_session_title(session_id, title)
-
-    messages = history + [{"role": "user", "content": update.message.text}]
 
     chat = update.effective_chat
     target = StreamTarget(
@@ -400,17 +422,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         usage = chat_stream.usage
     except ProviderError as exc:
-        await update.message.reply_text(str(exc))
+        await _reply(update, context, str(exc))
         return
     except aiohttp.InvalidURL:
-        await update.message.reply_text(t("chat_invalid_url", lang))
+        await _reply(update, context, t("chat_invalid_url", lang))
         return
     except aiohttp.ClientConnectorError as exc:
-        await update.message.reply_text(t("chat_connect_error", lang, error=exc.os_error))
+        await _reply(update, context, t("chat_connect_error", lang, error=exc.os_error))
         return
     except Exception:
-        # Streaming failed for a non-provider reason (e.g. Telegram API issue).
-        # Fall back to a plain non-streaming request.
+        # Streaming failed — fall back to non-streaming
         try:
             final_text, usage = await chat_once(
                 http_session,
@@ -422,25 +443,107 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             for text, pm in md_to_chunks(final_text):
                 await update.message.reply_text(text, parse_mode=pm)
         except ProviderError as exc:
-            await update.message.reply_text(str(exc))
+            await _reply(update, context, str(exc))
             return
         except Exception as exc:
-            await update.message.reply_text(t("chat_request_failed", lang, error=exc))
+            await _reply(update, context, t("chat_request_failed", lang, error=exc))
             return
 
     # Persist the exchange
     total_tokens = int(usage.get("total_tokens", 0)) if usage else 0
-    await db.add_message(session_id, "user", update.message.text)
+    await db.add_message(session_id, "user", user_text_for_db)
     await db.add_message(session_id, "assistant", final_text, tokens=total_tokens)
 
-    # Session token summary footer
+    # Session token summary footer (auto-deletes)
     session_tokens = await db.get_session_tokens(session_id)
     session_info = await db.get_session(session_id)
     title_short = (session_info["title"] or "Session")[:25] if session_info else "Session"
-    await update.message.reply_text(
+    msg = await update.message.reply_text(
         t("token_footer", lang, title=title_short, tokens=f"{session_tokens:,}"),
         disable_notification=True,
     )
+    _schedule_delete(context.bot, update.effective_chat.id, msg.message_id)
+
+
+# ── Message handlers ──────────────────────────────────────────────────────────
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.message.text:
+        return
+    lang = get_lang(update.effective_user)
+    user_id = update.effective_user.id
+
+    user = await db.get_user(user_id)
+    if not user["provider"]:
+        await _reply(update, context, t("chat_no_provider", lang))
+        return
+    if not user["model"]:
+        await _reply(update, context, t("chat_no_model", lang))
+        return
+
+    # Resolve current session (create one if needed or if it was deleted)
+    session_id = user["current_session_id"]
+    if session_id is not None and await db.get_session(session_id) is None:
+        session_id = None
+    if session_id is None:
+        session_id = await db.create_session(user_id)
+
+    # Auto-title from the first message in this session
+    history = await db.get_messages(session_id)
+    if not history:
+        title = update.message.text[:40].replace("\n", " ")
+        await db.set_session_title(session_id, title)
+
+    messages = history + [{"role": "user", "content": update.message.text}]
+    await _run_chat(update, context, messages, session_id, lang, update.message.text)
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.message.photo:
+        return
+    lang = get_lang(update.effective_user)
+    user_id = update.effective_user.id
+
+    user = await db.get_user(user_id)
+    if not user["provider"]:
+        await _reply(update, context, t("chat_no_provider", lang))
+        return
+    if not user["model"]:
+        await _reply(update, context, t("chat_no_model", lang))
+        return
+
+    # Resolve current session
+    session_id = user["current_session_id"]
+    if session_id is not None and await db.get_session(session_id) is None:
+        session_id = None
+    if session_id is None:
+        session_id = await db.create_session(user_id)
+
+    # Download the largest photo size and base64-encode it
+    photo = update.message.photo[-1]
+    photo_file = await context.bot.get_file(photo.file_id)
+    photo_bytes = await photo_file.download_as_bytearray()
+    b64 = base64.b64encode(photo_bytes).decode()
+
+    caption = (update.message.caption or "").strip()
+    user_text = caption if caption else t("image_no_caption", lang)
+
+    # Auto-title from the first message in this session
+    history = await db.get_messages(session_id)
+    if not history:
+        title = (caption or t("image_label", lang))[:40].replace("\n", " ")
+        await db.set_session_title(session_id, title)
+
+    # Build vision-compatible message (OpenAI image_url format)
+    image_message: dict = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": user_text},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+        ],
+    }
+    messages = history + [image_message]
+    await _run_chat(update, context, messages, session_id, lang, user_text)
 
 
 # ── App lifecycle ────────────────────────────────────────────────────────────
@@ -486,6 +589,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(session_callback, pattern="^sess:"))
 
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
     application.post_init = on_startup
     application.post_shutdown = on_shutdown

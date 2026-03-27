@@ -78,6 +78,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "chat_request_failed": "Request failed: {error}",
         # Token footer
         "token_footer": '▸ "{title}" · {tokens} tokens',
+        # Image
+        "image_no_caption": "What's in this image?",
+        "image_label": "[image]",
         # Misc
         "empty_response": "(empty response)",
     },
@@ -157,6 +160,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "chat_request_failed": "請求失敗：{error}",
         # Token footer
         "token_footer": '▸「{title}」· {tokens} tokens',
+        # Image
+        "image_no_caption": "這張圖片裡有什麼？",
+        "image_label": "【圖片】",
         # Misc
         "empty_response": "（無回應）",
     },
